@@ -137,6 +137,40 @@ deferred Open Questions are resolved below.
 - **Alternatives considered**: mTLS-only service mesh (rejected for MVP: doesn't
   cover end-user identity); API keys per client (rejected: weak tenancy/identity).
 
+## R11. Global scale & latency strategy (millions of users)
+
+- **Decision**: Adopt a **"scale-ready seams in MVP, scale-out infra deferred"**
+  posture. The MVP is single-region but includes the cheap-to-add seams so
+  global scale is later config/infra, not a rewrite. The target end-state is a
+  **regional cell architecture** with edge routing.
+  - **MVP seams (build now)**: (a) `Cache` + **request-coalescing** interface so
+    identical concurrent objectives share one search/inspect pass and public,
+    non-personalized layers are cached by `(normalized_objective + geohash +
+    constraints)` with freshness TTL + per-tenant privacy scoping; (b)
+    **structured-first** search that prefers Places/web APIs and only launches a
+    browser sandbox as a last resort; (c) model **tier-routing** adapters (cheap
+    extraction model, premium planning) + prompt caching; (d) per-workspace
+    **budget + sandbox fan-out caps** (cost/capacity governance); (e)
+    **BrowserEnginePool / pre-warm interface** (on-demand in MVP); (f) stateless
+    gateway + broker-based (Redis Streams) event fan-out; (g) `region` on every
+    record (already in data model).
+  - **Scale-out (deferred, planned workstream)**: regional **cells** (each a
+    self-contained gateway + Postgres + Redis + sandbox pool + model routing);
+    **GeoDNS/anycast** edge routing to nearest cell; per-region **pre-warmed
+    sandbox pools** autoscaled by queue depth; **CDN** for artifacts; cross-region
+    metadata only where policy permits.
+- **Rationale**: This workload is long-running and expensive per request
+  (sandboxes + LLM), not high-QPS CRUD — so the latency/overhead levers are
+  *perceived-latency streaming*, *avoiding browser work via caching/coalescing
+  and structured-first*, and *proximity via regional cells*, NOT raw request
+  throughput. Cells scale linearly and satisfy data residency (Principle VII).
+- **Alternatives considered**: Single global multi-master DB + global LB
+  (rejected: latency, residency violations, hot-shard risk); building full
+  multi-region now (rejected: premature, contradicts MVP-first, large overhead);
+  ignoring scale and refactoring later (rejected: the seams above are cheap now
+  and expensive to retrofit — e.g., coalescing and structured-first shape the
+  service interfaces).
+
 ## Resolved unknowns summary
 
 | Source marker | Resolution |
