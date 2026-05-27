@@ -1,0 +1,423 @@
+openapi: 3.1.0
+info:
+  title: Agentic Browser Platform API (MVP)
+  version: 0.1.0
+  description: >
+    Modality-neutral API for the Agentic Browser MVP. Covers workspace intake,
+    auditable planning, location-aware search, parallel browser-sandbox
+    inspection (discovery/extract only), composable Workspace Document, and the
+    foundational policy/approval gate. Execution-class actions are present in the
+    contract but DENIED in MVP (FR-026).
+servers:
+  - url: https://api.agentic-browser.example/v1/agentic-browser
+    description: MVP (single region; region resolved from auth principal)
+security:
+  - bearerAuth: []
+tags:
+  - name: workspaces
+  - name: events
+  - name: sandboxes
+  - name: approvals
+
+paths:
+  /workspaces:
+    post:
+      tags: [workspaces]
+      summary: Create a workspace
+      operationId: createWorkspace
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateWorkspaceRequest' }
+      responses:
+        '201':
+          description: Workspace created (or idempotent replay)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreateWorkspaceResponse' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Backpressure' }
+
+  /workspaces/{workspace_id}:
+    get:
+      tags: [workspaces]
+      summary: Get workspace state
+      operationId: getWorkspace
+      parameters: [ { $ref: '#/components/parameters/WorkspaceId' } ]
+      responses:
+        '200':
+          description: Workspace
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Workspace' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /workspaces/{workspace_id}/events:
+    get:
+      tags: [events]
+      summary: Stream workspace events (SSE, resumable)
+      operationId: streamWorkspaceEvents
+      description: >
+        Server-Sent Events. Clients resume after a disconnect by sending the
+        Last-Event-ID header with the last received sequence; the server replays
+        missed events from the durable log before attaching to the live stream.
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - in: header
+          name: Last-Event-ID
+          required: false
+          schema: { type: integer, format: int64 }
+          description: Last received event sequence; resume point.
+      responses:
+        '200':
+          description: text/event-stream of Event objects ordered by sequence
+          content:
+            text/event-stream:
+              schema: { $ref: '#/components/schemas/Event' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /workspaces/{workspace_id}/answers:
+    post:
+      tags: [workspaces]
+      summary: Submit answers to planner follow-up questions
+      operationId: submitAnswers
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AnswersRequest' }
+      responses:
+        '202': { description: Accepted; planning resumes }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '422': { $ref: '#/components/responses/Error' }
+
+  /workspaces/{workspace_id}/document:
+    get:
+      tags: [workspaces]
+      summary: Get the composed Workspace Document
+      operationId: getWorkspaceDocument
+      parameters: [ { $ref: '#/components/parameters/WorkspaceId' } ]
+      responses:
+        '200':
+          description: Workspace Document for client rendering
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WorkspaceDocument' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /workspaces/{workspace_id}/sandboxes:
+    post:
+      tags: [sandboxes]
+      summary: Start a sandbox to inspect a candidate
+      operationId: startSandbox
+      parameters:
+        - $ref: '#/components/parameters/WorkspaceId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartSandboxRequest' }
+      responses:
+        '201':
+          description: Sandbox requested
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sandbox' }
+        '403':
+          description: Execution-class mode denied by policy engine in MVP (FR-026)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
+        '429': { $ref: '#/components/responses/Backpressure' }
+
+  /sandboxes/{sandbox_id}/actions:
+    post:
+      tags: [sandboxes]
+      summary: Execute an approved sandbox action (POST-MVP; denied without bound approval)
+      operationId: executeSandboxAction
+      parameters:
+        - in: path
+          name: sandbox_id
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExecuteActionRequest' }
+      responses:
+        '403':
+          description: >
+            Denied — no valid bound approval, or execution-class action out of
+            MVP scope. The policy engine denies regardless of planner output.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+        '409':
+          description: Approval/state divergence — re-approval required (FR-024)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  /approvals/{approval_id}/approve:
+    post:
+      tags: [approvals]
+      summary: Approve a bound action
+      operationId: approveAction
+      parameters:
+        - $ref: '#/components/parameters/ApprovalId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Approval recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+        '409':
+          description: Expired/voided/already-decided approval
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  /approvals/{approval_id}/deny:
+    post:
+      tags: [approvals]
+      summary: Deny a bound action
+      operationId: denyAction
+      parameters:
+        - $ref: '#/components/parameters/ApprovalId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '200':
+          description: Denial recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Approval' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string, maxLength: 200 }
+      description: Required on all mutating endpoints; guarantees at-most-one effect.
+    WorkspaceId:
+      in: path
+      name: workspace_id
+      required: true
+      schema: { type: string }
+    ApprovalId:
+      in: path
+      name: approval_id
+      required: true
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    IdempotencyConflict:
+      description: Idempotency key reused with a different request fingerprint
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Backpressure:
+      description: Rate/concurrency limit exceeded — retry later
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    CreateWorkspaceRequest:
+      type: object
+      required: [objective, modality]
+      properties:
+        objective: { type: string, minLength: 1 }
+        modality: { $ref: '#/components/schemas/Modality' }
+        location:
+          type: object
+          properties:
+            latitude: { type: number }
+            longitude: { type: number }
+            radius_miles: { type: number }
+            permission_id: { type: string }
+        constraints:
+          type: object
+          additionalProperties: true
+    CreateWorkspaceResponse:
+      type: object
+      required: [workspace_id, status, event_stream_url]
+      properties:
+        workspace_id: { type: string }
+        status: { $ref: '#/components/schemas/WorkspaceStatus' }
+        event_stream_url: { type: string }
+    Workspace:
+      type: object
+      properties:
+        workspace_id: { type: string }
+        tenant_id: { type: string }
+        user_id: { type: string }
+        region: { type: string }
+        objective: { type: string }
+        modality: { $ref: '#/components/schemas/Modality' }
+        status: { $ref: '#/components/schemas/WorkspaceStatus' }
+        version: { type: integer }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+    AnswersRequest:
+      type: object
+      required: [answers]
+      properties:
+        answers:
+          type: array
+          items:
+            type: object
+            required: [question_id, value]
+            properties:
+              question_id: { type: string }
+              value: { type: string }
+    StartSandboxRequest:
+      type: object
+      required: [candidate_id, mode]
+      properties:
+        candidate_id: { type: string }
+        mode:
+          type: string
+          enum: [discovery, extract, prepare, submit_approved, payment_approved, communication_approved]
+          description: MVP permits only discovery/extract; others are denied (403).
+        engine:
+          type: string
+          enum: [tinyfish, playwright, browser_use, computer_use]
+          default: tinyfish
+    Sandbox:
+      type: object
+      properties:
+        sandbox_id: { type: string }
+        workspace_id: { type: string }
+        candidate_id: { type: string }
+        engine: { type: string }
+        mode: { type: string }
+        status:
+          type: string
+          enum: [requested, allocated, starting, ready, running, awaiting_approval, completed, failed, expired, destroyed]
+    ExecuteActionRequest:
+      type: object
+      required: [action_type, approval_id, action_payload]
+      properties:
+        action_type: { $ref: '#/components/schemas/ActionType' }
+        approval_id: { type: string }
+        action_payload:
+          type: object
+          additionalProperties: true
+    Approval:
+      type: object
+      properties:
+        approval_id: { type: string }
+        workspace_id: { type: string }
+        sandbox_id: { type: string }
+        risk_class: { type: string }
+        action_type: { $ref: '#/components/schemas/ActionType' }
+        summary: { type: string }
+        action_payload_hash: { type: string }
+        state_snapshot: { type: object, additionalProperties: true }
+        cost_amount:
+          type: object
+          properties:
+            minor_units: { type: integer }
+            currency: { type: string }
+        payment_required: { type: boolean }
+        expires_at: { type: string, format: date-time }
+        status:
+          type: string
+          enum: [pending, approved, denied, expired, voided]
+    WorkspaceDocument:
+      type: object
+      properties:
+        document_id: { type: string }
+        workspace_id: { type: string }
+        version: { type: integer }
+        cards:
+          type: array
+          items: { $ref: '#/components/schemas/CandidateCard' }
+        action_descriptors:
+          type: array
+          items: { $ref: '#/components/schemas/ActionDescriptor' }
+        rank_basis: { type: object, additionalProperties: true }
+    CandidateCard:
+      type: object
+      description: No raw source HTML; thumbnails/snippets + link-out only.
+      properties:
+        candidate_id: { type: string }
+        name: { type: string }
+        rating: { type: number, nullable: true }
+        price_summary: { type: object, additionalProperties: true, nullable: true }
+        availability: { type: object, additionalProperties: true, nullable: true }
+        distance_m: { type: number, nullable: true }
+        source_provenance:
+          type: array
+          items:
+            type: object
+            properties:
+              provider: { type: string }
+              url: { type: string }
+              fetched_at: { type: string, format: date-time }
+              confidence: { type: number }
+        artifact_refs: { type: array, items: { type: string } }
+        risk_flags: { type: array, items: { type: string } }
+    ActionDescriptor:
+      type: object
+      properties:
+        action_type: { $ref: '#/components/schemas/ActionType' }
+        risk_class: { type: string }
+        target_ref: { type: string }
+        requires_approval:
+          type: boolean
+          description: Resolved by the deterministic policy engine, not the planner.
+    Event:
+      type: object
+      properties:
+        event_id: { type: string }
+        workspace_id: { type: string }
+        sequence: { type: integer, format: int64 }
+        type:
+          type: string
+          enum: [plan.created, question.required, search.started, candidate.found, sandbox.started, sandbox.step, artifact.created, candidate.rank_updated, workspace.composed, approval.required, action.completed, workspace.completed, error]
+        payload: { type: object, additionalProperties: true }
+        created_at: { type: string, format: date-time }
+    Modality:
+      type: string
+      enum: [web, chat, mobile, voice, telephony, api]
+    WorkspaceStatus:
+      type: string
+      enum: [created, planning, needs_user_info, searching, inspecting, composing, ready_for_review, awaiting_approval, executing_action, completed, cancelled, failed, expired]
+    ActionType:
+      type: string
+      enum: [purchase, payment, booking, application, submission, account_creation, call, message, upload, terms_acceptance, publishing, personal_data_share]
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
